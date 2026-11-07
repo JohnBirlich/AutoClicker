@@ -121,6 +121,9 @@ struct Input {
 
 #[link(name = "user32")]
 extern "system" {
+    fn SetProcessDPIAware() -> BOOL;
+    fn GetDC(window: HWND) -> HDC;
+    fn ReleaseDC(window: HWND, dc: HDC) -> i32;
     fn RegisterClassW(class: *const WndClassW) -> u16;
     fn UnregisterClassW(class_name: *const u16, instance: HINSTANCE) -> BOOL;
     fn CreateWindowExW(
@@ -211,6 +214,7 @@ extern "system" {
 
 #[link(name = "gdi32")]
 extern "system" {
+    fn GetDeviceCaps(hdc: HDC, index: i32) -> i32;
     fn CreateSolidBrush(color: u32) -> HBRUSH;
     fn CreatePen(style: i32, width: i32, color: u32) -> HPEN;
     fn CreateFontW(
@@ -247,6 +251,8 @@ extern "system" {
     fn DrawTextW(hdc: HDC, text: *const u16, count: i32, rect: *mut Rect, format: u32) -> i32;
 }
 
+const LOGPIXELSX: i32 = 88;
+const BASE_DPI: u32 = 96;
 const CS_VREDRAW: u32 = 0x0001;
 const CS_HREDRAW: u32 = 0x0002;
 const WS_CAPTION: u32 = 0x00C0_0000;
@@ -256,6 +262,7 @@ const WS_CHILD: u32 = 0x4000_0000;
 const WS_VISIBLE: u32 = 0x1000_0000;
 const WS_TABSTOP: u32 = 0x0001_0000;
 const WS_GROUP: u32 = 0x0002_0000;
+const SS_RIGHT: u32 = 0x0002;
 const BS_OWNERDRAW: u32 = 0x0000_000B;
 const ES_AUTOHSCROLL: u32 = 0x0000_0080;
 const ES_NUMBER: u32 = 0x0000_2000;
@@ -294,10 +301,11 @@ const ODS_FOCUS: u32 = 0x0010;
 const DT_CENTER: u32 = 0x0001;
 const DT_VCENTER: u32 = 0x0004;
 const DT_SINGLELINE: u32 = 0x0020;
+const GDI_OPAQUE: i32 = 2;
 const GDI_TRANSPARENT: i32 = 1;
 const PS_SOLID: i32 = 0;
 const FW_NORMAL: i32 = 400;
-const FW_BOLD: i32 = 700;
+const FW_SEMIBOLD: i32 = 600;
 const DEFAULT_CHARSET: u32 = 1;
 const OUT_DEFAULT_PRECIS: u32 = 0;
 const CLIP_DEFAULT_PRECIS: u32 = 0;
@@ -314,13 +322,14 @@ const fn rgb(red: u32, green: u32, blue: u32) -> u32 {
     red | (green << 8) | (blue << 16)
 }
 
-const COLOR_BACKGROUND: u32 = rgb(8, 12, 39);
-const COLOR_CARD: u32 = rgb(17, 25, 61);
-const COLOR_BORDER: u32 = rgb(38, 55, 101);
-const COLOR_CYAN: u32 = rgb(15, 218, 245);
-const COLOR_CYAN_DARK: u32 = rgb(7, 97, 125);
-const COLOR_TEXT: u32 = rgb(232, 243, 255);
-const COLOR_MUTED: u32 = rgb(145, 164, 198);
+const COLOR_BACKGROUND: u32 = rgb(10, 15, 28);
+const COLOR_CARD: u32 = rgb(17, 25, 40);
+const COLOR_OPTION: u32 = rgb(25, 36, 54);
+const COLOR_BORDER: u32 = rgb(40, 54, 73);
+const COLOR_CYAN: u32 = rgb(34, 211, 238);
+const COLOR_CYAN_DARK: u32 = rgb(8, 119, 145);
+const COLOR_TEXT: u32 = rgb(240, 244, 248);
+const COLOR_MUTED: u32 = rgb(148, 163, 184);
 
 const HOTKEY_ID: i32 = 1;
 const TIMER_ID: usize = 1;
@@ -337,7 +346,7 @@ const ID_CPS_RANGE: u16 = 1105;
 const ID_MOUSE_LABEL: u16 = 1106;
 const ID_STATUS: u16 = 1107;
 const ID_COUNTER: u16 = 1108;
-const ID_HINT: u16 = 1109;
+const ID_CPS_EDIT: u16 = 1110;
 const MAX_BATCH_CLICKS: usize = 16;
 const SPIN_WINDOW: Duration = Duration::from_micros(300);
 const MAX_SLEEP_SLICE: Duration = Duration::from_millis(5);
@@ -350,6 +359,7 @@ enum MouseButton {
 
 struct AppState {
     window: HWND,
+    dpi: u32,
     maximum_radio: HWND,
     custom_radio: HWND,
     cps_edit: HWND,
@@ -368,18 +378,25 @@ struct AppState {
     mouse_button: MouseButton,
     background_brush: HBRUSH,
     card_brush: HBRUSH,
+    option_brush: HBRUSH,
     accent_brush: HBRUSH,
     stop_brush: HBRUSH,
     border_pen: HPEN,
     accent_pen: HPEN,
     title_font: HFONT,
+    section_font: HFONT,
     body_font: HFONT,
+    small_font: HFONT,
+    button_font: HFONT,
+    value_font: HFONT,
     large_icon: HICON,
     small_icon: HICON,
 }
 
 pub fn run() {
     unsafe {
+        SetProcessDPIAware();
+        let dpi = system_dpi();
         let instance = GetModuleHandleW(null());
         let class_name = wide("AutoClickerMainWindow");
         let window_title = wide("AutoClicker");
@@ -417,8 +434,8 @@ pub fn run() {
         let mut rect = Rect {
             left: 0,
             top: 0,
-            right: 480,
-            bottom: 380,
+            right: scale_value(460, dpi),
+            bottom: scale_value(500, dpi),
         };
         AdjustWindowRect(&mut rect, style, 0);
 
@@ -502,7 +519,7 @@ unsafe extern "system" fn window_proc(
                     );
                 }
             }
-            let state = Box::new(AppState::new(window, instance));
+            let state = Box::new(AppState::new(window, instance, system_dpi()));
             let state_ptr = Box::into_raw(state);
             unsafe {
                 SetWindowLongPtrW(window, GWLP_USERDATA, state_ptr as isize);
@@ -610,103 +627,225 @@ extern "system" {
 }
 
 impl AppState {
-    fn new(window: HWND, instance: HINSTANCE) -> Self {
+    fn new(window: HWND, instance: HINSTANCE, dpi: u32) -> Self {
         let heading = create_control(
-            window, instance, "STATIC", "AutoClicker", WS_CHILD | WS_VISIBLE, 0,
-            ID_HEADING, 82, 17, 370, 34,
+            window,
+            instance,
+            dpi,
+            "STATIC",
+            "AutoClicker",
+            WS_CHILD | WS_VISIBLE,
+            0,
+            ID_HEADING,
+            84,
+            20,
+            340,
+            38,
         );
         let subtitle = create_control(
-            window, instance, "STATIC", "Быстро. Точно. Под контролем.", WS_CHILD | WS_VISIBLE, 0,
-            ID_SUBTITLE, 82, 52, 370, 22,
+            window,
+            instance,
+            dpi,
+            "STATIC",
+            "Клики под контролем",
+            WS_CHILD | WS_VISIBLE,
+            0,
+            ID_SUBTITLE,
+            84,
+            58,
+            340,
+            20,
         );
         let speed_label = create_control(
-            window, instance, "STATIC", "СКОРОСТЬ", WS_CHILD | WS_VISIBLE, 0,
-            ID_SPEED_LABEL, 32, 99, 160, 20,
+            window,
+            instance,
+            dpi,
+            "STATIC",
+            "Скорость",
+            WS_CHILD | WS_VISIBLE,
+            0,
+            ID_SPEED_LABEL,
+            36,
+            106,
+            220,
+            24,
         );
         let maximum_radio = create_control(
-            window, instance, "BUTTON", "Максимум",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP | BS_OWNERDRAW, 0,
-            ID_MAXIMUM, 32, 122, 140, 28,
+            window,
+            instance,
+            dpi,
+            "BUTTON",
+            "Максимум",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP | BS_OWNERDRAW,
+            0,
+            ID_MAXIMUM,
+            36,
+            140,
+            184,
+            42,
         );
         let custom_radio = create_control(
-            window, instance, "BUTTON", "Своя частота",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0,
-            ID_CUSTOM, 190, 122, 190, 28,
+            window,
+            instance,
+            dpi,
+            "BUTTON",
+            "Своя частота",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+            0,
+            ID_CUSTOM,
+            232,
+            140,
+            192,
+            42,
         );
         let cps_label = create_control(
-            window, instance, "STATIC", "Кликов в секунду", WS_CHILD | WS_VISIBLE, 0,
-            ID_CPS_LABEL, 32, 158, 132, 24,
-        );
-        let cps_edit = create_control(
-            window, instance, "EDIT", "1000",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_NUMBER | ES_AUTOHSCROLL,
-            0, 0, 166, 154, 120, 30,
+            window,
+            instance,
+            dpi,
+            "STATIC",
+            "Кликов в секунду",
+            WS_CHILD | WS_VISIBLE,
+            0,
+            ID_CPS_LABEL,
+            36,
+            194,
+            220,
+            20,
         );
         let cps_range = create_control(
-            window, instance, "STATIC", "без верхнего предела", WS_CHILD | WS_VISIBLE, 0,
-            ID_CPS_RANGE, 300, 158, 154, 24,
+            window,
+            instance,
+            dpi,
+            "STATIC",
+            "CPS · без лимита",
+            WS_CHILD | WS_VISIBLE | SS_RIGHT,
+            0,
+            ID_CPS_RANGE,
+            260,
+            194,
+            164,
+            20,
+        );
+        let cps_edit = create_control(
+            window,
+            instance,
+            dpi,
+            "EDIT",
+            "1000",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_NUMBER | ES_AUTOHSCROLL,
+            0,
+            ID_CPS_EDIT,
+            48,
+            222,
+            364,
+            38,
         );
         let mouse_label = create_control(
-            window, instance, "STATIC", "КНОПКА МЫШИ", WS_CHILD | WS_VISIBLE, 0,
-            ID_MOUSE_LABEL, 32, 207, 180, 20,
+            window,
+            instance,
+            dpi,
+            "STATIC",
+            "Кнопка мыши",
+            WS_CHILD | WS_VISIBLE,
+            0,
+            ID_MOUSE_LABEL,
+            36,
+            307,
+            220,
+            24,
         );
         let left_radio = create_control(
-            window, instance, "BUTTON", "Левая",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP | BS_OWNERDRAW, 0,
-            ID_LEFT, 32, 230, 130, 26,
+            window,
+            instance,
+            dpi,
+            "BUTTON",
+            "Левая",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP | BS_OWNERDRAW,
+            0,
+            ID_LEFT,
+            36,
+            338,
+            184,
+            34,
         );
         let right_radio = create_control(
-            window, instance, "BUTTON", "Правая",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0,
-            ID_RIGHT, 190, 230, 130, 26,
+            window,
+            instance,
+            dpi,
+            "BUTTON",
+            "Правая",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+            0,
+            ID_RIGHT,
+            232,
+            338,
+            192,
+            34,
         );
         let start_button = create_control(
-            window, instance, "BUTTON", "Запустить (F6)",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0,
-            ID_START, 32, 284, 208, 44,
+            window,
+            instance,
+            dpi,
+            "BUTTON",
+            "Запустить · F6",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+            0,
+            ID_START,
+            20,
+            402,
+            420,
+            56,
         );
         let status_label = create_control(
-            window, instance, "STATIC", "ОСТАНОВЛЕН", WS_CHILD | WS_VISIBLE, 0,
-            ID_STATUS, 260, 286, 190, 22,
+            window,
+            instance,
+            dpi,
+            "STATIC",
+            "ГОТОВ · F6",
+            WS_CHILD | WS_VISIBLE,
+            0,
+            ID_STATUS,
+            24,
+            470,
+            220,
+            20,
         );
         let counter_label = create_control(
-            window, instance, "STATIC", "Кликов: 0", WS_CHILD | WS_VISIBLE, 0,
-            ID_COUNTER, 260, 310, 190, 20,
-        );
-        let hint = create_control(
-            window, instance, "STATIC",
-            "F6 — запуск / остановка    •    «Максимум» нагружает CPU",
-            WS_CHILD | WS_VISIBLE, 0, ID_HINT, 24, 348, 432, 20,
+            window,
+            instance,
+            dpi,
+            "STATIC",
+            "Кликов: 0",
+            WS_CHILD | WS_VISIBLE | SS_RIGHT,
+            0,
+            ID_COUNTER,
+            252,
+            470,
+            184,
+            20,
         );
 
-        let face_name = wide("Segoe UI");
-        let title_font = unsafe {
-            CreateFontW(
-                -27, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET,
-                OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                DEFAULT_PITCH | FF_DONTCARE, face_name.as_ptr(),
-            )
-        };
-        let body_font = unsafe {
-            CreateFontW(
-                -16, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
-                OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                DEFAULT_PITCH | FF_DONTCARE, face_name.as_ptr(),
-            )
-        };
+        let title_font = create_ui_font(-30, FW_SEMIBOLD, dpi);
+        let section_font = create_ui_font(-17, FW_SEMIBOLD, dpi);
+        let body_font = create_ui_font(-16, FW_NORMAL, dpi);
+        let small_font = create_ui_font(-14, FW_NORMAL, dpi);
+        let button_font = create_ui_font(-16, FW_SEMIBOLD, dpi);
+        let value_font = create_ui_font(-24, FW_SEMIBOLD, dpi);
         unsafe {
             SendMessageW(cps_edit, EM_SETLIMITTEXT, 0x7FFF_FFFE, 0);
             SendMessageW(heading, WM_SETFONT, title_font as usize, 1);
-            for control in [
-                subtitle, speed_label, cps_label, cps_edit, cps_range,
-                mouse_label, status_label, counter_label, hint,
-            ] {
-                SendMessageW(control, WM_SETFONT, body_font as usize, 1);
+            SendMessageW(subtitle, WM_SETFONT, body_font as usize, 1);
+            SendMessageW(speed_label, WM_SETFONT, section_font as usize, 1);
+            SendMessageW(mouse_label, WM_SETFONT, section_font as usize, 1);
+            for control in [cps_label, cps_range, status_label, counter_label] {
+                SendMessageW(control, WM_SETFONT, small_font as usize, 1);
             }
+            SendMessageW(cps_edit, WM_SETFONT, value_font as usize, 1);
         }
 
         let mut state = Self {
             window,
+            dpi,
             maximum_radio,
             custom_radio,
             cps_edit,
@@ -725,12 +864,17 @@ impl AppState {
             mouse_button: MouseButton::Left,
             background_brush: unsafe { CreateSolidBrush(COLOR_BACKGROUND) },
             card_brush: unsafe { CreateSolidBrush(COLOR_CARD) },
+            option_brush: unsafe { CreateSolidBrush(COLOR_OPTION) },
             accent_brush: unsafe { CreateSolidBrush(COLOR_CYAN) },
             stop_brush: unsafe { CreateSolidBrush(COLOR_CYAN_DARK) },
-            border_pen: unsafe { CreatePen(PS_SOLID, 1, COLOR_BORDER) },
-            accent_pen: unsafe { CreatePen(PS_SOLID, 1, COLOR_CYAN) },
+            border_pen: unsafe { CreatePen(PS_SOLID, scale_value(1, dpi).max(1), COLOR_BORDER) },
+            accent_pen: unsafe { CreatePen(PS_SOLID, scale_value(1, dpi).max(1), COLOR_CYAN) },
             title_font,
+            section_font,
             body_font,
+            small_font,
+            button_font,
+            value_font,
             large_icon: null_mut(),
             small_icon: null_mut(),
         };
@@ -764,7 +908,10 @@ impl AppState {
             }
         };
         let status_text = match &speed {
-            SpeedMode::Maximum => "МАКСИМУМ · F6".to_owned(),
+            SpeedMode::Maximum => "● РАБОТАЕТ · MAX".to_owned(),
+            SpeedMode::FixedCps(rate) if rate.interval().is_zero() => {
+                "● РАБОТАЕТ · MAX".to_owned()
+            }
             SpeedMode::FixedCps(rate) => {
                 let requested = rate.requested_cps();
                 let short_rate = if requested.len() > 8 {
@@ -772,11 +919,7 @@ impl AppState {
                 } else {
                     requested.to_owned()
                 };
-                if rate.interval().is_zero() {
-                    format!("MAX · {short_rate}")
-                } else {
-                    format!("CPS: {short_rate}")
-                }
+                format!("● РАБОТАЕТ · {short_rate} CPS")
             }
         };
         let button = self.mouse_button;
@@ -801,7 +944,7 @@ impl AppState {
             Err(_) => {
                 self.running.store(false, Ordering::Release);
                 self.set_running_controls(false);
-                self.set_status("ОШИБКА ПОТОКА");
+                self.set_status("● ОШИБКА ПОТОКА");
                 show_message(
                     self.window,
                     "Не удалось запустить рабочий поток автокликера.",
@@ -821,7 +964,7 @@ impl AppState {
 
         if !shutting_down {
             if failed {
-                self.set_status("ОШИБКА · ПРАВА");
+                self.set_status("● ОШИБКА · ПРАВА");
             } else {
                 self.update_idle_status();
             }
@@ -868,9 +1011,9 @@ impl AppState {
         set_control_text(
             self.start_button,
             if is_running {
-                "Остановить (F6)"
+                "Остановить · F6"
             } else {
-                "Запустить (F6)"
+                "Запустить · F6"
             },
         );
         unsafe {
@@ -888,9 +1031,9 @@ impl AppState {
 
     fn update_idle_status(&self) {
         let status = if self.hotkey_registered {
-            "ГОТОВ · F6"
+            "● ГОТОВ · F6"
         } else {
-            "ГОТОВ · КНОПКА"
+            "● ГОТОВ · КНОПКА"
         };
         self.set_status(status);
     }
@@ -920,39 +1063,42 @@ impl AppState {
 
     fn paint(&self) {
         unsafe {
+            let px = |value| scale_value(value, self.dpi);
             let mut paint: PaintStruct = zeroed();
             let hdc = BeginPaint(self.window, &mut paint);
             let client = Rect {
                 left: 0,
                 top: 0,
-                right: 480,
-                bottom: 380,
+                right: px(460),
+                bottom: px(500),
             };
             FillRect(hdc, &client, self.background_brush);
 
             let old_brush = SelectObject(hdc, self.card_brush as HGDIOBJ);
             let old_pen = SelectObject(hdc, self.border_pen as HGDIOBJ);
-            RoundRect(hdc, 16, 88, 464, 194, 16, 16);
-            RoundRect(hdc, 16, 200, 464, 266, 16, 16);
-            RoundRect(hdc, 16, 274, 464, 336, 16, 16);
+            RoundRect(hdc, px(16), px(92), px(444), px(280), px(18), px(18));
+            RoundRect(hdc, px(16), px(294), px(444), px(384), px(18), px(18));
             SelectObject(hdc, old_pen);
             SelectObject(hdc, old_brush);
 
-            let edit_brush = SelectObject(hdc, self.card_brush as HGDIOBJ);
+            let edit_brush = SelectObject(hdc, self.option_brush as HGDIOBJ);
             let edit_pen = SelectObject(hdc, self.border_pen as HGDIOBJ);
-            RoundRect(hdc, 162, 150, 290, 188, 8, 8);
+            RoundRect(hdc, px(36), px(216), px(424), px(266), px(10), px(10));
             SelectObject(hdc, edit_pen);
             SelectObject(hdc, edit_brush);
 
-            let accent_bar = Rect {
-                left: 16,
-                top: 104,
-                right: 20,
-                bottom: 178,
-            };
-            FillRect(hdc, &accent_bar, self.accent_brush);
             if !self.large_icon.is_null() {
-                DrawIconEx(hdc, 24, 16, self.large_icon, 44, 44, 0, null_mut(), 0);
+                DrawIconEx(
+                    hdc,
+                    px(24),
+                    px(18),
+                    self.large_icon,
+                    px(48),
+                    px(48),
+                    0,
+                    null_mut(),
+                    0,
+                );
             }
             EndPaint(self.window, &paint);
         }
@@ -960,9 +1106,18 @@ impl AppState {
 
     fn color_static(&self, hdc: HDC, control: HWND) -> HBRUSH {
         let control_id = unsafe { GetDlgCtrlID(control) } as u16;
+        if control_id == ID_CPS_EDIT {
+            unsafe {
+                SetBkMode(hdc, GDI_OPAQUE);
+                SetBkColor(hdc, COLOR_CARD);
+                SetTextColor(hdc, COLOR_MUTED);
+            }
+            return self.card_brush;
+        }
+
         let color = match control_id {
-            ID_HEADING => COLOR_TEXT,
-            ID_STATUS | ID_COUNTER => COLOR_CYAN,
+            ID_HEADING | ID_SPEED_LABEL | ID_MOUSE_LABEL => COLOR_TEXT,
+            ID_STATUS => COLOR_CYAN,
             _ => COLOR_MUTED,
         };
         unsafe {
@@ -974,6 +1129,7 @@ impl AppState {
 
     fn color_edit(&self, hdc: HDC) -> HBRUSH {
         unsafe {
+            SetBkMode(hdc, GDI_OPAQUE);
             SetTextColor(hdc, COLOR_TEXT);
             SetBkColor(hdc, COLOR_CARD);
         }
@@ -987,40 +1143,42 @@ impl AppState {
         let item = unsafe { &*draw_item };
         let id = item.ctl_id as u16;
         let hdc = item.hdc;
+        let bounds = item.rc_item;
+        let px = |value| scale_value(value, self.dpi);
 
         unsafe {
-            let old_font = SelectObject(hdc, self.body_font as HGDIOBJ);
+            let old_font = SelectObject(hdc, self.button_font as HGDIOBJ);
             SetBkMode(hdc, GDI_TRANSPARENT);
 
             if id == ID_START {
                 let running = self.worker.is_some();
-                let fill = if running || item.item_state & ODS_SELECTED != 0 {
+                let pressed = item.item_state & ODS_SELECTED != 0;
+                let fill = if running || pressed {
                     self.stop_brush
                 } else {
                     self.accent_brush
                 };
                 let old_brush = SelectObject(hdc, fill as HGDIOBJ);
                 let old_pen = SelectObject(hdc, self.accent_pen as HGDIOBJ);
-                let bounds = item.rc_item;
                 RoundRect(
                     hdc,
                     bounds.left,
                     bounds.top,
                     bounds.right,
                     bounds.bottom,
-                    12,
-                    12,
+                    px(16),
+                    px(16),
                 );
                 SetTextColor(hdc, if running { COLOR_TEXT } else { COLOR_BACKGROUND });
                 let caption = wide(if running {
-                    "ОСТАНОВИТЬ  ·  F6"
+                    "Остановить · F6"
                 } else {
-                    "ЗАПУСТИТЬ  ·  F6"
+                    "Запустить · F6"
                 });
                 let mut text_rect = Rect {
-                    left: bounds.left + 5,
+                    left: bounds.left + px(8),
                     top: bounds.top,
-                    right: bounds.right - 5,
+                    right: bounds.right - px(8),
                     bottom: bounds.bottom,
                 };
                 DrawTextW(
@@ -1040,32 +1198,44 @@ impl AppState {
                     ID_RIGHT => ("Правая", matches!(self.mouse_button, MouseButton::Right)),
                     _ => ("", false),
                 };
-                let bounds = item.rc_item;
-                let center_y = (bounds.top + bounds.bottom) / 2;
-                let circle_pen = if selected { self.accent_pen } else { self.border_pen };
-                let old_pen = SelectObject(hdc, circle_pen as HGDIOBJ);
-                let old_brush = SelectObject(hdc, self.card_brush as HGDIOBJ);
-                Ellipse(hdc, bounds.left + 5, center_y - 9, bounds.left + 23, center_y + 9);
-                if selected {
-                    SelectObject(hdc, self.accent_pen as HGDIOBJ);
-                    SelectObject(hdc, self.accent_brush as HGDIOBJ);
-                    Ellipse(hdc, bounds.left + 10, center_y - 4, bounds.left + 18, center_y + 4);
-                }
+                let disabled = item.item_state & ODS_DISABLED != 0;
+                let pressed = item.item_state & ODS_SELECTED != 0;
+                let fill = if pressed {
+                    self.stop_brush
+                } else if selected && disabled {
+                    self.stop_brush
+                } else if selected {
+                    self.accent_brush
+                } else {
+                    self.option_brush
+                };
+                let pen = if selected { self.accent_pen } else { self.border_pen };
+                let old_brush = SelectObject(hdc, fill as HGDIOBJ);
+                let old_pen = SelectObject(hdc, pen as HGDIOBJ);
+                RoundRect(
+                    hdc,
+                    bounds.left + px(1),
+                    bounds.top + px(1),
+                    bounds.right - px(1),
+                    bounds.bottom - px(1),
+                    px(12),
+                    px(12),
+                );
                 SetTextColor(
                     hdc,
-                    if item.item_state & ODS_DISABLED != 0 {
+                    if selected && !disabled {
+                        COLOR_BACKGROUND
+                    } else if disabled {
                         COLOR_MUTED
-                    } else if selected {
-                        COLOR_CYAN
                     } else {
                         COLOR_TEXT
                     },
                 );
                 let caption = wide(caption);
                 let mut text_rect = Rect {
-                    left: bounds.left + 30,
+                    left: bounds.left + px(8),
                     top: bounds.top,
-                    right: bounds.right,
+                    right: bounds.right - px(8),
                     bottom: bounds.bottom,
                 };
                 DrawTextW(
@@ -1073,18 +1243,18 @@ impl AppState {
                     caption.as_ptr(),
                     -1,
                     &mut text_rect,
-                    DT_VCENTER | DT_SINGLELINE,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE,
                 );
                 SelectObject(hdc, old_pen);
                 SelectObject(hdc, old_brush);
             }
 
             if item.item_state & ODS_FOCUS != 0 {
-                let mut focus_rect = item.rc_item;
-                focus_rect.left += 3;
-                focus_rect.top += 3;
-                focus_rect.right -= 3;
-                focus_rect.bottom -= 3;
+                let mut focus_rect = bounds;
+                focus_rect.left += px(4);
+                focus_rect.top += px(4);
+                focus_rect.right -= px(4);
+                focus_rect.bottom -= px(4);
                 DrawFocusRect(hdc, &focus_rect);
             }
             SelectObject(hdc, old_font);
@@ -1173,12 +1343,17 @@ impl Drop for AppState {
             for object in [
                 self.background_brush as HGDIOBJ,
                 self.card_brush as HGDIOBJ,
+                self.option_brush as HGDIOBJ,
                 self.accent_brush as HGDIOBJ,
                 self.stop_brush as HGDIOBJ,
                 self.border_pen as HGDIOBJ,
                 self.accent_pen as HGDIOBJ,
                 self.title_font as HGDIOBJ,
+                self.section_font as HGDIOBJ,
                 self.body_font as HGDIOBJ,
+                self.small_font as HGDIOBJ,
+                self.button_font as HGDIOBJ,
+                self.value_font as HGDIOBJ,
             ] {
                 if !object.is_null() {
                     DeleteObject(object);
@@ -1335,9 +1510,50 @@ fn release_if_needed(button: MouseButton, sent_events: u32) {
     }
 }
 
+fn system_dpi() -> u32 {
+    let dc = unsafe { GetDC(null_mut()) };
+    if dc.is_null() {
+        return BASE_DPI;
+    }
+    let dpi = unsafe { GetDeviceCaps(dc, LOGPIXELSX) };
+    unsafe {
+        ReleaseDC(null_mut(), dc);
+    }
+    if dpi > 0 { dpi as u32 } else { BASE_DPI }
+}
+
+fn scale_value(value: i32, dpi: u32) -> i32 {
+    let scaled = i64::from(value) * i64::from(dpi);
+    let rounding = if scaled >= 0 { 48 } else { -48 };
+    ((scaled + rounding) / i64::from(BASE_DPI)) as i32
+}
+
+fn create_ui_font(height: i32, weight: i32, dpi: u32) -> HFONT {
+    let face_name = wide("Segoe UI");
+    unsafe {
+        CreateFontW(
+            scale_value(height, dpi),
+            0,
+            0,
+            0,
+            weight,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE,
+            face_name.as_ptr(),
+        )
+    }
+}
+
 fn create_control(
     parent: HWND,
     instance: HINSTANCE,
+    dpi: u32,
     class_name: &str,
     text: &str,
     style: u32,
@@ -1350,6 +1566,10 @@ fn create_control(
 ) -> HWND {
     let class_name = wide(class_name);
     let text = wide(text);
+    let x = scale_value(x, dpi);
+    let y = scale_value(y, dpi);
+    let width = scale_value(width, dpi);
+    let height = scale_value(height, dpi);
     unsafe {
         CreateWindowExW(
             ex_style,
