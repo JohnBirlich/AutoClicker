@@ -25,7 +25,20 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - name: Run tests
-        run: cargo test
+        shell: pwsh
+        run: |
+          cargo test *> cargo-test.log
+          $testExitCode = $LASTEXITCODE
+          Get-Content cargo-test.log
+          if ($testExitCode -ne 0) { exit $testExitCode }
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-test-log
+          path: cargo-test.log
+          if-no-files-found: ignore
 
       - name: Build and package
         shell: pwsh
