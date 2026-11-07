@@ -8,6 +8,12 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to attach the built files to; leave empty for build-only.
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -54,5 +60,32 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: AutoClicker-windows-x64
-          path: dist/AutoClicker-windows-x64.zip
+          path: |
+            dist/AutoClicker.exe
+            dist/AutoClicker-windows-x64.zip
+            dist/AutoClicker-source.zip
           if-no-files-found: error
+
+  publish-release:
+    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+    needs: build-windows-x64
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download packaged files
+        uses: actions/download-artifact@v4
+        with:
+          name: AutoClicker-windows-x64
+          path: dist
+
+      - name: Attach files to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          files: |
+            dist/AutoClicker.exe
+            dist/AutoClicker-windows-x64.zip
+            dist/AutoClicker-source.zip
+          fail_on_unmatched_files: true
+          overwrite_files: true

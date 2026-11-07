@@ -82,10 +82,12 @@ cargo build --release --target x86_64-pc-windows-msvc
 
 Результат появится в `dist/`:
 
-- `dist/AutoClicker-windows-x64/AutoClicker.exe` и необходимые рядом файлы;
-- `dist/AutoClicker-windows-x64.zip` — готовый архив для пользователя.
+- `dist/AutoClicker.exe` — отдельный исполняемый файл;
+- `dist/AutoClicker-windows-x64.zip` — приложение, иконки, README и лицензия;
+- `dist/AutoClicker-source.zip` — исходный проект, ресурсы и скрипты;
+- `dist/AutoClicker-windows-x64/` — распакованная папка приложения.
 
-При создании тега вида `v*` GitHub Actions собирает Windows x64 и публикует ZIP как артефакт GitHub Release. Ручной запуск workflow также создаёт архив как Actions artifact.
+При создании тега вида `v*` GitHub Actions собирает Windows x64 и публикует в GitHub Release отдельный `AutoClicker.exe`, ZIP с приложением и ZIP с исходниками. Ручной запуск workflow создаёт те же файлы как Actions artifact; если указать существующий тег релиза, workflow прикрепит их к этому релизу.
 
 ## Ограничения и ответственное использование
 
