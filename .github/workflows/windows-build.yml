@@ -1,0 +1,91 @@
+name: Windows build
+
+on:
+  push:
+    branches:
+      - 'arena/**'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to attach the built files to; leave empty for build-only.
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-x64:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Run tests
+        shell: pwsh
+        run: |
+          cargo test *> cargo-test.log
+          $testExitCode = $LASTEXITCODE
+          Get-Content cargo-test.log
+          if ($testExitCode -ne 0) {
+            Get-Content cargo-test.log -Tail 50 | ForEach-Object {
+              $line = $_.Replace('%', '%25').Replace('\r', '%0D').Replace('\n', '%0A')
+              Write-Output "::error title=Rust test diagnostic::$line"
+            }
+            exit $testExitCode
+          }
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-test-log
+          path: cargo-test.log
+          if-no-files-found: ignore
+
+      - name: Build and package
+        shell: pwsh
+        run: .\scripts\package-windows.ps1
+
+      - name: Upload build archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoClicker-windows-x64
+          path: |
+            dist/AutoClicker.exe
+            dist/AutoClicker-windows-x64.zip
+            dist/AutoClicker-source.zip
+          if-no-files-found: error
+
+  publish-release:
+    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+    needs: build-windows-x64
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download packaged files
+        uses: actions/download-artifact@v4
+        with:
+          name: AutoClicker-windows-x64
+          path: dist
+
+      - name: Attach files to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          files: |
+            dist/AutoClicker.exe
+            dist/AutoClicker-windows-x64.zip
+            dist/AutoClicker-source.zip
+          fail_on_unmatched_files: true
+          overwrite_files: true
