@@ -1,0 +1,39 @@
+name: Windows build
+
+on:
+  push:
+    branches:
+      - 'arena/**'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-x64:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Run tests
+        run: cargo test
+
+      - name: Build and package
+        shell: pwsh
+        run: .\scripts\package-windows.ps1
+
+      - name: Upload build archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoClicker-windows-x64
+          path: dist/AutoClicker-windows-x64.zip
+          if-no-files-found: error
