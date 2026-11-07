@@ -210,6 +210,8 @@ extern "system" {
 extern "system" {
     fn GetModuleHandleW(module_name: *const u16) -> HINSTANCE;
     fn GetModuleFileNameW(module: HINSTANCE, file_name: *mut u16, size: UINT) -> UINT;
+    fn GetCurrentThread() -> *mut c_void;
+    fn SetThreadPriority(thread: *mut c_void, priority: i32) -> BOOL;
 }
 
 #[link(name = "gdi32")]
@@ -347,7 +349,10 @@ const ID_MOUSE_LABEL: u16 = 1106;
 const ID_STATUS: u16 = 1107;
 const ID_COUNTER: u16 = 1108;
 const ID_CPS_EDIT: u16 = 1110;
-const MAX_BATCH_CLICKS: usize = 16;
+const MAX_BATCH_CLICKS: usize = 64;
+const THREAD_PRIORITY_NORMAL: i32 = 0;
+const THREAD_PRIORITY_ABOVE_NORMAL: i32 = 1;
+const CPS_SAMPLE_WINDOW: Duration = Duration::from_secs(1);
 const SPIN_WINDOW: Duration = Duration::from_micros(300);
 const MAX_SLEEP_SLICE: Duration = Duration::from_millis(5);
 
@@ -371,6 +376,8 @@ struct AppState {
     running: Arc<AtomicBool>,
     click_count: Arc<AtomicU64>,
     worker_failed: Arc<AtomicBool>,
+    last_sample_clicks: u64,
+    last_sample_at: Instant,
     worker: Option<JoinHandle<()>>,
     hotkey_registered: bool,
     timer_registered: bool,
@@ -857,6 +864,8 @@ impl AppState {
             running: Arc::new(AtomicBool::new(false)),
             click_count: Arc::new(AtomicU64::new(0)),
             worker_failed: Arc::new(AtomicBool::new(false)),
+            last_sample_clicks: 0,
+            last_sample_at: Instant::now(),
             worker: None,
             hotkey_registered: false,
             timer_registered: false,
@@ -907,24 +916,11 @@ impl AppState {
                 }
             }
         };
-        let status_text = match &speed {
-            SpeedMode::Maximum => "● РАБОТАЕТ · MAX".to_owned(),
-            SpeedMode::FixedCps(rate) if rate.interval().is_zero() => {
-                "● РАБОТАЕТ · MAX".to_owned()
-            }
-            SpeedMode::FixedCps(rate) => {
-                let requested = rate.requested_cps();
-                let short_rate = if requested.len() > 8 {
-                    format!("{}…", &requested[..7])
-                } else {
-                    requested.to_owned()
-                };
-                format!("● РАБОТАЕТ · {short_rate} CPS")
-            }
-        };
         let button = self.mouse_button;
 
         self.click_count.store(0, Ordering::Relaxed);
+        self.last_sample_clicks = 0;
+        self.last_sample_at = Instant::now();
         self.worker_failed.store(false, Ordering::Relaxed);
         self.running.store(true, Ordering::Release);
 
@@ -938,7 +934,7 @@ impl AppState {
             Ok(worker) => {
                 self.worker = Some(worker);
                 self.set_running_controls(true);
-                self.set_status(&status_text);
+                self.set_status("● ЗАПУЩЕНО");
                 self.repaint();
             }
             Err(_) => {
@@ -975,6 +971,18 @@ impl AppState {
     fn refresh(&mut self) {
         let clicks = self.click_count.load(Ordering::Relaxed);
         self.set_counter(&format!("Кликов: {clicks}"));
+
+        if self.worker.is_some() && self.running.load(Ordering::Acquire) {
+            let now = Instant::now();
+            let elapsed = now.saturating_duration_since(self.last_sample_at);
+            if elapsed >= CPS_SAMPLE_WINDOW {
+                let delta = clicks.saturating_sub(self.last_sample_clicks);
+                let cps = (u128::from(delta) * 1_000_000_000 / elapsed.as_nanos()) as u64;
+                self.set_status(&format!("● {cps} CPS"));
+                self.last_sample_clicks = clicks;
+                self.last_sample_at = now;
+            }
+        }
 
         if self.worker.is_some() && !self.running.load(Ordering::Acquire) {
             self.finish_worker(false);
@@ -1370,6 +1378,14 @@ fn click_worker(
     click_count: Arc<AtomicU64>,
     worker_failed: Arc<AtomicBool>,
 ) {
+    let priority = match &speed {
+        SpeedMode::Maximum => THREAD_PRIORITY_ABOVE_NORMAL,
+        SpeedMode::FixedCps(rate) if rate.interval().is_zero() => THREAD_PRIORITY_ABOVE_NORMAL,
+        SpeedMode::FixedCps(_) => THREAD_PRIORITY_NORMAL,
+    };
+    unsafe {
+        SetThreadPriority(GetCurrentThread(), priority);
+    }
     match speed {
         SpeedMode::Maximum => run_at_maximum(button, &running, &click_count, &worker_failed),
         SpeedMode::FixedCps(rate) => {
