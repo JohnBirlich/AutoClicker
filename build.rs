@@ -1,5 +1,6 @@
 use std::env;
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
@@ -13,13 +14,19 @@ fn main() {
         return;
     }
 
+    let Some(resource_compiler) = find_resource_compiler() else {
+        println!(
+            "cargo:warning=rc.exe was not found; the app will use the adjacent .ico file at runtime"
+        );
+        return;
+    };
+
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest dir"));
     let output_dir = PathBuf::from(env::var_os("OUT_DIR").expect("output dir"));
     let resource_file = output_dir.join("autoclicker.res");
     let resource_script = manifest_dir.join("resources").join("autoclicker.rc");
-    let resource_compiler = env::var_os("RC").unwrap_or_else(|| "rc.exe".into());
 
-    let result = Command::new(resource_compiler)
+    let result = Command::new(&resource_compiler)
         .current_dir(&manifest_dir)
         .arg("/nologo")
         .arg("/fo")
@@ -34,7 +41,56 @@ fn main() {
                 resource_file.display()
             );
         }
-        Ok(status) => panic!("Windows resource compiler failed with status {status}"),
-        Err(error) => panic!("Could not run rc.exe to embed the application icon: {error}"),
+        Ok(status) => println!(
+            "cargo:warning=rc.exe exited with {status}; the app will use the adjacent .ico file at runtime"
+        ),
+        Err(error) => println!(
+            "cargo:warning=Could not run {} ({error}); the app will use the adjacent .ico file at runtime",
+            Path::new(&resource_compiler).display()
+        ),
     }
+}
+
+fn find_resource_compiler() -> Option<OsString> {
+    if let Some(compiler) = env::var_os("RC") {
+        if !compiler.is_empty() {
+            return Some(compiler);
+        }
+    }
+
+    if let Some(path) = env::var_os("PATH") {
+        for directory in env::split_paths(&path) {
+            let candidate = directory.join("rc.exe");
+            if candidate.is_file() {
+                return Some(candidate.into_os_string());
+            }
+        }
+    }
+
+    for variable in ["ProgramFiles(x86)", "ProgramFiles"] {
+        let Some(program_files) = env::var_os(variable) else {
+            continue;
+        };
+        if let Some(candidate) = find_in_windows_kit(Path::new(&program_files)) {
+            return Some(candidate.into_os_string());
+        }
+    }
+
+    None
+}
+
+fn find_in_windows_kit(program_files: &Path) -> Option<PathBuf> {
+    let kit_bin = program_files.join("Windows Kits").join("10").join("bin");
+    let mut version_dirs: Vec<PathBuf> = std::fs::read_dir(kit_bin)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    version_dirs.sort_by(|left, right| right.file_name().cmp(&left.file_name()));
+
+    version_dirs
+        .into_iter()
+        .map(|version| version.join("x64").join("rc.exe"))
+        .find(|candidate| candidate.is_file())
 }
