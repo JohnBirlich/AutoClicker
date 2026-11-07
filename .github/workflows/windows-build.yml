@@ -30,7 +30,13 @@ jobs:
           cargo test *> cargo-test.log
           $testExitCode = $LASTEXITCODE
           Get-Content cargo-test.log
-          if ($testExitCode -ne 0) { exit $testExitCode }
+          if ($testExitCode -ne 0) {
+            Get-Content cargo-test.log -Tail 50 | ForEach-Object {
+              $line = $_.Replace('%', '%25').Replace('\r', '%0D').Replace('\n', '%0A')
+              Write-Output "::error title=Rust test diagnostic::$line"
+            }
+            exit $testExitCode
+          }
 
       - name: Upload test log
         if: always()
